@@ -1,7 +1,7 @@
 // accept4(2) is a GNU extension and gnu17 alone does not expose it.
 #define _GNU_SOURCE
 
-#include "vduse/bridge.h"
+#include "vkage/bridge.h"
 
 #include "bus.h"
 #include "internal.h"
@@ -37,16 +37,16 @@ extern char **environ;
 
 #define MAX_UML_ARGV 64
 
-struct vd_bridge_req {
+struct vk_bridge_req {
     // Must stay first; libvduse allocates the iovec arrays after it.
     VduseVirtqElement elem;
 
-    struct vd_bridge_queue *q;
+    struct vk_bridge_queue *q;
     uint32_t slot;
 };
 
-struct vd_bridge_queue {
-    struct vd_bridge *br;
+struct vk_bridge_queue {
+    struct vk_bridge *br;
     uint32_t index;
 
     VduseVirtq *vq;
@@ -63,14 +63,14 @@ struct vd_bridge_queue {
     int kick_fd; // we signal it
     int call_fd; // UML signals it
 
-    struct vd_bridge_req **inflight; // queue_size entries, indexed by slot
+    struct vk_bridge_req **inflight; // queue_size entries, indexed by slot
     uint32_t *free_slots;
     uint32_t n_free;
 };
 
-struct vd_bridge {
+struct vk_bridge {
     VduseDev *dev;
-    struct vd_loop *loop;
+    struct vk_loop *loop;
 
     char *name;
     char *sock_path;
@@ -87,7 +87,7 @@ struct vd_bridge {
 
     struct umv_hello hello;
 
-    struct vd_bridge_queue *queues;
+    struct vk_bridge_queue *queues;
     uint32_t num_queues;
 
     bool start_sent;
@@ -102,7 +102,7 @@ struct vd_bridge {
 // ------------------------------------------------------------------
 
 // UML kernel virtual address -> pointer into our mapping of its physmem.
-static void *umv_ptr(struct vd_bridge *br, uint64_t kva, uint64_t len) {
+static void *umv_ptr(struct vk_bridge *br, uint64_t kva, uint64_t len) {
     uint64_t off;
 
     if (kva < br->hello.uml_physmem)
@@ -146,7 +146,7 @@ static void iov_scatter(const struct iovec *iov, unsigned n, const void *src,
     }
 }
 
-static bool slot_alloc(struct vd_bridge_queue *q, uint32_t *out) {
+static bool slot_alloc(struct vk_bridge_queue *q, uint32_t *out) {
     if (!q->n_free)
         return false;
 
@@ -154,7 +154,7 @@ static bool slot_alloc(struct vd_bridge_queue *q, uint32_t *out) {
     return true;
 }
 
-static void slot_free(struct vd_bridge_queue *q, uint32_t slot) {
+static void slot_free(struct vk_bridge_queue *q, uint32_t slot) {
     q->free_slots[q->n_free++] = slot;
 }
 
@@ -162,7 +162,7 @@ static void slot_free(struct vd_bridge_queue *q, uint32_t slot) {
 // Ring, driver side
 // ------------------------------------------------------------------
 
-static void ring_publish(struct vd_bridge_queue *q, uint16_t head) {
+static void ring_publish(struct vk_bridge_queue *q, uint16_t head) {
     q->vr.avail->ring[q->avail_idx % q->num_desc] = htole16(head);
 
     // Descriptor and avail-ring writes must land before the index UML
@@ -173,8 +173,8 @@ static void ring_publish(struct vd_bridge_queue *q, uint16_t head) {
     q->vr.avail->idx = htole16(q->avail_idx);
 }
 
-static bool ring_relay(struct vd_bridge_queue *q, struct vd_bridge_req *req) {
-    struct vd_bridge *br = q->br;
+static bool ring_relay(struct vk_bridge_queue *q, struct vk_bridge_req *req) {
+    struct vk_bridge *br = q->br;
     VduseVirtqElement *e = &req->elem;
     uint64_t out_len = iov_total(e->out_sg, e->out_num);
     uint64_t in_len = iov_total(e->in_sg, e->in_num);
@@ -219,12 +219,12 @@ static bool ring_relay(struct vd_bridge_queue *q, struct vd_bridge_req *req) {
 }
 
 // Move as many pending vduse requests to UML as there are free slots.
-static void queue_pump(struct vd_bridge_queue *q) {
+static void queue_pump(struct vk_bridge_queue *q) {
     uint64_t one = 1;
     bool kicked = false;
 
     for (;;) {
-        struct vd_bridge_req *req;
+        struct vk_bridge_req *req;
         uint32_t slot;
 
         if (!slot_alloc(q, &slot))
@@ -248,7 +248,7 @@ static void queue_pump(struct vd_bridge_queue *q) {
              * a malformed reply. A shim whose advertised seg_max and
              * size_max agree with its slot_size never gets here.
              */
-            vd_set_error(EMSGSIZE, "queue %u: request exceeds slot size %llu",
+            vk_set_error(EMSGSIZE, "queue %u: request exceeds slot size %llu",
                          q->index, (unsigned long long)q->br->hello.slot_size);
             vduse_queue_push(q->vq, &req->elem, 0);
             vduse_queue_notify(q->vq);
@@ -261,12 +261,12 @@ static void queue_pump(struct vd_bridge_queue *q) {
     }
 
     if (kicked && write(q->kick_fd, &one, sizeof(one)) < 0)
-        vd_set_error(errno, "queue %u: kick failed: %s", q->index,
+        vk_set_error(errno, "queue %u: kick failed: %s", q->index,
                      strerror(errno));
 }
 
-static void queue_drain_used(struct vd_bridge_queue *q) {
-    struct vd_bridge *br = q->br;
+static void queue_drain_used(struct vk_bridge_queue *q) {
+    struct vk_bridge *br = q->br;
     uint16_t used_idx;
 
     used_idx = le16toh(__atomic_load_n(&q->vr.used->idx, __ATOMIC_ACQUIRE));
@@ -276,7 +276,7 @@ static void queue_drain_used(struct vd_bridge_queue *q) {
             &q->vr.used->ring[q->last_used % q->num_desc];
         uint32_t id = le32toh(ue->id);
         uint32_t len = le32toh(ue->len);
-        struct vd_bridge_req *req;
+        struct vk_bridge_req *req;
         uint32_t slot = id / 2;
 
         q->last_used++;
@@ -312,7 +312,7 @@ static void queue_drain_used(struct vd_bridge_queue *q) {
 // ------------------------------------------------------------------
 
 static void on_vduse_kick(int fd, void *user) {
-    struct vd_bridge_queue *q = user;
+    struct vk_bridge_queue *q = user;
     uint64_t counter;
 
     if (read(fd, &counter, sizeof(counter)) < 0 && errno != EAGAIN)
@@ -322,7 +322,7 @@ static void on_vduse_kick(int fd, void *user) {
 }
 
 static void on_uml_call(int fd, void *user) {
-    struct vd_bridge_queue *q = user;
+    struct vk_bridge_queue *q = user;
     uint64_t counter;
 
     if (read(fd, &counter, sizeof(counter)) < 0 && errno != EAGAIN)
@@ -335,42 +335,42 @@ static void on_uml_call(int fd, void *user) {
 }
 
 static void on_ctrl(int fd, void *user) {
-    struct vd_bridge *br = user;
+    struct vk_bridge *br = user;
 
     (void)fd;
     if (vduse_dev_handler(br->dev) < 0) {
-        vd_set_error(EIO, "vduse control channel failed");
-        vd_loop_stop(br->loop);
+        vk_set_error(EIO, "vduse control channel failed");
+        vk_loop_stop(br->loop);
     }
 }
 
 static void on_bus_added(int fd, void *user) {
-    struct vd_bridge *br = user;
+    struct vk_bridge *br = user;
 
-    vd_loop_del(br->loop, fd);
+    vk_loop_del(br->loop, fd);
     br->bus_pidfd = -1;
 
-    if (vd_bus_reap(fd))
+    if (vk_bus_reap(fd))
         br->bus_added = true;
     else
-        vd_loop_stop(br->loop);
+        vk_loop_stop(br->loop);
 
     close(fd);
 }
 
 static void on_uml_exit(int fd, void *user) {
-    struct vd_bridge *br = user;
+    struct vk_bridge *br = user;
 
-    vd_loop_del(br->loop, fd);
-    vd_set_error(ECHILD, "UML instance exited");
-    vd_loop_stop(br->loop);
+    vk_loop_del(br->loop, fd);
+    vk_set_error(ECHILD, "UML instance exited");
+    vk_loop_stop(br->loop);
 }
 
 // ------------------------------------------------------------------
 // Feature negotiation handoff
 // ------------------------------------------------------------------
 
-static bool bridge_send_start(struct vd_bridge *br) {
+static bool bridge_send_start(struct vk_bridge *br) {
     struct umv_start msg = {
         .magic = UMV_MAGIC,
         .type = UMV_MSG_START,
@@ -384,7 +384,7 @@ static bool bridge_send_start(struct vd_bridge *br) {
      * set -- which it is by the time a queue is enabled.
      */
     if (ioctl(vduse_dev_get_fd(br->dev), VDUSE_DEV_GET_FEATURES, &features)) {
-        vd_set_error(errno, "VDUSE_DEV_GET_FEATURES: %s", strerror(errno));
+        vk_set_error(errno, "VDUSE_DEV_GET_FEATURES: %s", strerror(errno));
         return false;
     }
 
@@ -392,14 +392,14 @@ static bool bridge_send_start(struct vd_bridge *br) {
 
     rc = send(br->sock_fd, &msg, sizeof(msg), MSG_NOSIGNAL);
     if (rc != (ssize_t)sizeof(msg)) {
-        vd_set_error(rc < 0 ? errno : EIO, "sending START to UML failed");
+        vk_set_error(rc < 0 ? errno : EIO, "sending START to UML failed");
         return false;
     }
 
     return true;
 }
 
-static struct vd_bridge_queue *queue_for(struct vd_bridge *br,
+static struct vk_bridge_queue *queue_for(struct vk_bridge *br,
                                          VduseVirtq *vq) {
     for (uint32_t i = 0; i < br->num_queues; i++)
         if (vduse_dev_get_queue(br->dev, (int)i) == vq)
@@ -409,8 +409,8 @@ static struct vd_bridge_queue *queue_for(struct vd_bridge *br,
 }
 
 static void bridge_enable_queue(VduseDev *dev, VduseVirtq *vq) {
-    struct vd_bridge *br = vduse_dev_get_priv(dev);
-    struct vd_bridge_queue *q = queue_for(br, vq);
+    struct vk_bridge *br = vduse_dev_get_priv(dev);
+    struct vk_bridge_queue *q = queue_for(br, vq);
 
     if (!q || !br->loop)
         return;
@@ -420,13 +420,13 @@ static void bridge_enable_queue(VduseDev *dev, VduseVirtq *vq) {
     // UML must know the negotiated set before it touches a descriptor.
     if (!br->start_sent) {
         if (!bridge_send_start(br)) {
-            vd_loop_stop(br->loop);
+            vk_loop_stop(br->loop);
             return;
         }
         br->start_sent = true;
     }
 
-    if (!vd_loop_add(br->loop, vduse_queue_get_fd(vq), on_vduse_kick, q))
+    if (!vk_loop_add(br->loop, vduse_queue_get_fd(vq), on_vduse_kick, q))
         return;
 
     // The driver may have queued work before we got here.
@@ -434,10 +434,10 @@ static void bridge_enable_queue(VduseDev *dev, VduseVirtq *vq) {
 }
 
 static void bridge_disable_queue(VduseDev *dev, VduseVirtq *vq) {
-    struct vd_bridge *br = vduse_dev_get_priv(dev);
+    struct vk_bridge *br = vduse_dev_get_priv(dev);
 
     if (br->loop)
-        vd_loop_del(br->loop, vduse_queue_get_fd(vq));
+        vk_loop_del(br->loop, vduse_queue_get_fd(vq));
 }
 
 static const VduseOps bridge_ops = {
@@ -449,17 +449,17 @@ static const VduseOps bridge_ops = {
 // Handshake
 // ------------------------------------------------------------------
 
-static bool listen_socket(struct vd_bridge *br) {
+static bool listen_socket(struct vk_bridge *br) {
     struct sockaddr_un addr;
 
     if (strlen(br->sock_path) >= sizeof(addr.sun_path)) {
-        vd_set_error(ENAMETOOLONG, "socket path too long");
+        vk_set_error(ENAMETOOLONG, "socket path too long");
         return false;
     }
 
     br->listen_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (br->listen_fd < 0) {
-        vd_set_error(errno, "socket: %s", strerror(errno));
+        vk_set_error(errno, "socket: %s", strerror(errno));
         return false;
     }
 
@@ -470,18 +470,18 @@ static bool listen_socket(struct vd_bridge *br) {
     strcpy(addr.sun_path, br->sock_path);
 
     if (bind(br->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        vd_set_error(errno, "bind %s: %s", br->sock_path, strerror(errno));
+        vk_set_error(errno, "bind %s: %s", br->sock_path, strerror(errno));
         return false;
     }
     if (listen(br->listen_fd, 1) < 0) {
-        vd_set_error(errno, "listen: %s", strerror(errno));
+        vk_set_error(errno, "listen: %s", strerror(errno));
         return false;
     }
 
     return true;
 }
 
-static bool spawn_uml(struct vd_bridge *br, const char *bin, const char *args) {
+static bool spawn_uml(struct vk_bridge *br, const char *bin, const char *args) {
     char *argv[MAX_UML_ARGV];
     char sock_arg[160];
     char *copy = NULL;
@@ -497,14 +497,14 @@ static bool spawn_uml(struct vd_bridge *br, const char *bin, const char *args) {
 
         copy = strdup(args);
         if (!copy) {
-            vd_set_error(ENOMEM, "out of memory");
+            vk_set_error(ENOMEM, "out of memory");
             return false;
         }
 
         for (tok = strtok_r(copy, " \t", &save); tok;
              tok = strtok_r(NULL, " \t", &save)) {
             if (argc >= MAX_UML_ARGV - 2) {
-                vd_set_error(E2BIG, "too many UML arguments");
+                vk_set_error(E2BIG, "too many UML arguments");
                 free(copy);
                 return false;
             }
@@ -520,13 +520,13 @@ static bool spawn_uml(struct vd_bridge *br, const char *bin, const char *args) {
     free(copy);
 
     if (rc != 0) {
-        vd_set_error(rc, "spawn %s: %s", bin, strerror(rc));
+        vk_set_error(rc, "spawn %s: %s", bin, strerror(rc));
         return false;
     }
 
     br->uml_pidfd = pidfd_open(pid, 0);
     if (br->uml_pidfd < 0) {
-        vd_set_error(errno, "pidfd_open: %s", strerror(errno));
+        vk_set_error(errno, "pidfd_open: %s", strerror(errno));
         kill(pid, SIGKILL);
         waitpid(pid, NULL, 0);
         return false;
@@ -536,7 +536,7 @@ static bool spawn_uml(struct vd_bridge *br, const char *bin, const char *args) {
 }
 
 // Accept the UML connection and read HELLO plus its descriptor batch.
-static bool recv_hello(struct vd_bridge *br, int *fds, int *nfds_out,
+static bool recv_hello(struct vk_bridge *br, int *fds, int *nfds_out,
                        unsigned timeout_ms) {
     char control[CMSG_SPACE(sizeof(int) * (1 + 2 * UMV_MAX_QUEUES))];
     struct pollfd pfd = {.fd = br->listen_fd, .events = POLLIN};
@@ -549,18 +549,18 @@ static bool recv_hello(struct vd_bridge *br, int *fds, int *nfds_out,
 
     rc = poll(&pfd, 1, (int)timeout_ms);
     if (rc < 0) {
-        vd_set_error(errno, "poll: %s", strerror(errno));
+        vk_set_error(errno, "poll: %s", strerror(errno));
         return false;
     }
     if (rc == 0) {
-        vd_set_error(ETIMEDOUT, "UML did not connect to %s within %ums",
+        vk_set_error(ETIMEDOUT, "UML did not connect to %s within %ums",
                      br->sock_path, timeout_ms);
         return false;
     }
 
     br->sock_fd = accept4(br->listen_fd, NULL, NULL, SOCK_CLOEXEC);
     if (br->sock_fd < 0) {
-        vd_set_error(errno, "accept: %s", strerror(errno));
+        vk_set_error(errno, "accept: %s", strerror(errno));
         return false;
     }
 
@@ -579,7 +579,7 @@ static bool recv_hello(struct vd_bridge *br, int *fds, int *nfds_out,
     } while (rc < 0 && errno == EINTR);
 
     if (rc <= 0) {
-        vd_set_error(rc < 0 ? errno : EPIPE, "reading HELLO failed");
+        vk_set_error(rc < 0 ? errno : EPIPE, "reading HELLO failed");
         return false;
     }
 
@@ -591,7 +591,7 @@ static bool recv_hello(struct vd_bridge *br, int *fds, int *nfds_out,
         if (rc < 0 && errno == EINTR)
             continue;
         if (rc <= 0) {
-            vd_set_error(rc < 0 ? errno : EPIPE, "short HELLO");
+            vk_set_error(rc < 0 ? errno : EPIPE, "short HELLO");
             return false;
         }
         got += (size_t)rc;
@@ -600,13 +600,13 @@ static bool recv_hello(struct vd_bridge *br, int *fds, int *nfds_out,
     cmsg = CMSG_FIRSTHDR(&msg);
     if (!cmsg || cmsg->cmsg_level != SOL_SOCKET ||
         cmsg->cmsg_type != SCM_RIGHTS) {
-        vd_set_error(EPROTO, "HELLO carried no descriptors");
+        vk_set_error(EPROTO, "HELLO carried no descriptors");
         return false;
     }
 
     nfds = (int)((cmsg->cmsg_len - CMSG_LEN(0)) / sizeof(int));
     if (nfds < 1 || nfds > 1 + 2 * UMV_MAX_QUEUES) {
-        vd_set_error(EPROTO, "HELLO carried %d descriptors", nfds);
+        vk_set_error(EPROTO, "HELLO carried %d descriptors", nfds);
         return false;
     }
 
@@ -616,43 +616,43 @@ static bool recv_hello(struct vd_bridge *br, int *fds, int *nfds_out,
     return true;
 }
 
-static bool hello_valid(struct vd_bridge *br, int nfds) {
+static bool hello_valid(struct vk_bridge *br, int nfds) {
     const struct umv_hello *h = &br->hello;
 
     if (h->magic != UMV_MAGIC || h->type != UMV_MSG_HELLO) {
-        vd_set_error(EPROTO, "bad HELLO magic");
+        vk_set_error(EPROTO, "bad HELLO magic");
         return false;
     }
     if (h->version != UMV_VERSION) {
-        vd_set_error(EPROTO, "UML speaks protocol %u, bridge speaks %u",
+        vk_set_error(EPROTO, "UML speaks protocol %u, bridge speaks %u",
                      h->version, UMV_VERSION);
         return false;
     }
     if (h->num_queues < 1 || h->num_queues > UMV_MAX_QUEUES) {
-        vd_set_error(EPROTO, "bad queue count %u", h->num_queues);
+        vk_set_error(EPROTO, "bad queue count %u", h->num_queues);
         return false;
     }
     if (h->queue_size < UMV_MIN_QUEUE_SIZE ||
         h->queue_size > UMV_MAX_QUEUE_SIZE ||
         (h->queue_size & (h->queue_size - 1))) {
-        vd_set_error(EPROTO, "bad queue size %u", h->queue_size);
+        vk_set_error(EPROTO, "bad queue size %u", h->queue_size);
         return false;
     }
     if (!h->slot_size || h->slot_size > UMV_MAX_SLOT_SIZE) {
-        vd_set_error(EPROTO, "bad slot size %llu",
+        vk_set_error(EPROTO, "bad slot size %llu",
                      (unsigned long long)h->slot_size);
         return false;
     }
     if (h->config_size > UMV_MAX_CONFIG) {
-        vd_set_error(EPROTO, "config space too large");
+        vk_set_error(EPROTO, "config space too large");
         return false;
     }
     if (!h->physmem_size) {
-        vd_set_error(EPROTO, "zero physmem size");
+        vk_set_error(EPROTO, "zero physmem size");
         return false;
     }
     if (nfds != 1 + 2 * (int)h->num_queues) {
-        vd_set_error(EPROTO, "expected %d descriptors, got %d",
+        vk_set_error(EPROTO, "expected %d descriptors, got %d",
                      1 + 2 * (int)h->num_queues, nfds);
         return false;
     }
@@ -660,7 +660,7 @@ static bool hello_valid(struct vd_bridge *br, int nfds) {
     return true;
 }
 
-static bool map_and_setup_queues(struct vd_bridge *br, const int *fds) {
+static bool map_and_setup_queues(struct vk_bridge *br, const int *fds) {
     const struct umv_hello *h = &br->hello;
 
     br->physmem_fd = fds[0];
@@ -670,19 +670,19 @@ static bool map_and_setup_queues(struct vd_bridge *br, const int *fds) {
                    br->physmem_fd, 0);
     if (br->map == MAP_FAILED) {
         br->map = NULL;
-        vd_set_error(errno, "mmap physmem: %s", strerror(errno));
+        vk_set_error(errno, "mmap physmem: %s", strerror(errno));
         return false;
     }
 
     br->num_queues = h->num_queues;
     br->queues = calloc(br->num_queues, sizeof(*br->queues));
     if (!br->queues) {
-        vd_set_error(ENOMEM, "out of memory");
+        vk_set_error(ENOMEM, "out of memory");
         return false;
     }
 
     for (uint32_t i = 0; i < br->num_queues; i++) {
-        struct vd_bridge_queue *q = &br->queues[i];
+        struct vk_bridge_queue *q = &br->queues[i];
         size_t bytes;
         void *ring;
 
@@ -695,7 +695,7 @@ static bool map_and_setup_queues(struct vd_bridge *br, const int *fds) {
         bytes = vring_size(q->num_desc, UMV_VRING_ALIGN);
         ring = umv_ptr(br, h->vring_kva[i], bytes);
         if (!ring) {
-            vd_set_error(EPROTO, "queue %u vring is outside physmem", i);
+            vk_set_error(EPROTO, "queue %u vring is outside physmem", i);
             return false;
         }
 
@@ -713,7 +713,7 @@ static bool map_and_setup_queues(struct vd_bridge *br, const int *fds) {
         q->inflight = calloc(h->queue_size, sizeof(*q->inflight));
         q->free_slots = calloc(h->queue_size, sizeof(*q->free_slots));
         if (!q->inflight || !q->free_slots) {
-            vd_set_error(ENOMEM, "out of memory");
+            vk_set_error(ENOMEM, "out of memory");
             return false;
         }
 
@@ -729,22 +729,22 @@ static bool map_and_setup_queues(struct vd_bridge *br, const int *fds) {
 // Public API
 // ------------------------------------------------------------------
 
-bool vd_bridge_new(struct vd_bridge_opts opts, struct vd_bridge **out) {
+bool vk_bridge_new(struct vk_bridge_opts opts, struct vk_bridge **out) {
     int fds[1 + 2 * UMV_MAX_QUEUES];
-    struct vd_bridge *br;
+    struct vk_bridge *br;
     uint64_t features;
     unsigned timeout;
     char path[128];
     int nfds = 0;
 
     if (!opts.name || !out) {
-        vd_set_error(EINVAL, "name and out are required");
+        vk_set_error(EINVAL, "name and out are required");
         return false;
     }
 
     br = calloc(1, sizeof(*br));
     if (!br) {
-        vd_set_error(ENOMEM, "out of memory");
+        vk_set_error(ENOMEM, "out of memory");
         return false;
     }
 
@@ -756,7 +756,7 @@ bool vd_bridge_new(struct vd_bridge_opts opts, struct vd_bridge **out) {
                                         : DEFAULT_HANDSHAKE_MS;
 
     if (!opts.sock_path) {
-        snprintf(path, sizeof(path), "/tmp/vduse-bridge-%s.sock", opts.name);
+        snprintf(path, sizeof(path), "/tmp/vkage-bridge-%s.sock", opts.name);
         br->sock_path = strdup(path);
     } else {
         br->sock_path = strdup(opts.sock_path);
@@ -766,7 +766,7 @@ bool vd_bridge_new(struct vd_bridge_opts opts, struct vd_bridge **out) {
     br->vdpa_bin = strdup(opts.vdpa_bin ? opts.vdpa_bin : DEFAULT_VDPA_BIN);
     br->mgmtdev = strdup(opts.mgmtdev ? opts.mgmtdev : DEFAULT_MGMTDEV);
     if (!br->name || !br->sock_path || !br->vdpa_bin || !br->mgmtdev) {
-        vd_set_error(ENOMEM, "out of memory");
+        vk_set_error(ENOMEM, "out of memory");
         goto err;
     }
 
@@ -796,7 +796,7 @@ bool vd_bridge_new(struct vd_bridge_opts opts, struct vd_bridge **out) {
                                br->hello.config_size,
                                (char *)br->hello.config, &bridge_ops, br);
     if (!br->dev) {
-        vd_set_error(errno ? errno : EIO, "failed to create vduse device %s",
+        vk_set_error(errno ? errno : EIO, "failed to create vduse device %s",
                      br->name);
         goto err;
     }
@@ -804,7 +804,7 @@ bool vd_bridge_new(struct vd_bridge_opts opts, struct vd_bridge **out) {
     for (uint32_t i = 0; i < br->num_queues; i++) {
         if (vduse_dev_setup_queue(br->dev, (int)i,
                                   (int)br->hello.queue_size) < 0) {
-            vd_set_error(EIO, "failed to set up queue %u", i);
+            vk_set_error(EIO, "failed to set up queue %u", i);
             goto err;
         }
     }
@@ -813,30 +813,30 @@ bool vd_bridge_new(struct vd_bridge_opts opts, struct vd_bridge **out) {
     return true;
 
 err:
-    vd_bridge_free(br);
+    vk_bridge_free(br);
     return false;
 }
 
-bool vd_bridge_attach(struct vd_bridge *br, struct vd_loop *loop) {
+bool vk_bridge_attach(struct vk_bridge *br, struct vk_loop *loop) {
     br->loop = loop;
 
-    if (!vd_loop_add(loop, vduse_dev_get_fd(br->dev), on_ctrl, br))
+    if (!vk_loop_add(loop, vduse_dev_get_fd(br->dev), on_ctrl, br))
         return false;
 
     for (uint32_t i = 0; i < br->num_queues; i++)
-        if (!vd_loop_add(loop, br->queues[i].call_fd, on_uml_call,
+        if (!vk_loop_add(loop, br->queues[i].call_fd, on_uml_call,
                          &br->queues[i]))
             return false;
 
     if (br->uml_pidfd >= 0 &&
-        !vd_loop_add(loop, br->uml_pidfd, on_uml_exit, br))
+        !vk_loop_add(loop, br->uml_pidfd, on_uml_exit, br))
         return false;
 
-    br->bus_pidfd = vd_bus_spawn_add(br->vdpa_bin, br->name, br->mgmtdev);
+    br->bus_pidfd = vk_bus_spawn_add(br->vdpa_bin, br->name, br->mgmtdev);
     if (br->bus_pidfd < 0)
         return false;
 
-    if (!vd_loop_add(loop, br->bus_pidfd, on_bus_added, br)) {
+    if (!vk_loop_add(loop, br->bus_pidfd, on_bus_added, br)) {
         close(br->bus_pidfd);
         br->bus_pidfd = -1;
         return false;
@@ -848,7 +848,7 @@ bool vd_bridge_attach(struct vd_bridge *br, struct vd_loop *loop) {
 // Service the control fd until the child behind pidfd exits. See the same
 // pattern in blk.c: `vdpa dev del` drives a reset whose SET_STATUS still
 // needs answering, and the caller's loop has usually already stopped.
-static void pump_until_exit(struct vd_bridge *br, int pidfd) {
+static void pump_until_exit(struct vk_bridge *br, int pidfd) {
     struct pollfd fds[2] = {
         {.fd = vduse_dev_get_fd(br->dev), .events = POLLIN},
         {.fd = pidfd, .events = POLLIN},
@@ -885,7 +885,7 @@ static void pump_until_exit(struct vd_bridge *br, int pidfd) {
 // forever rather than exiting. Call this only once the VDUSE device is
 // gone, so UML is still able to complete in-flight requests during the
 // reset that `vdpa dev del` drives.
-static void uml_shutdown(struct vd_bridge *br) {
+static void uml_shutdown(struct vk_bridge *br) {
     struct pollfd pfd;
     siginfo_t si;
 
@@ -893,7 +893,7 @@ static void uml_shutdown(struct vd_bridge *br) {
         return;
 
     if (br->loop)
-        vd_loop_del(br->loop, br->uml_pidfd);
+        vk_loop_del(br->loop, br->uml_pidfd);
 
     if (pidfd_send_signal(br->uml_pidfd, SIGTERM, NULL, 0) == 0) {
         pfd.fd = br->uml_pidfd;
@@ -911,33 +911,33 @@ static void uml_shutdown(struct vd_bridge *br) {
     br->uml_pidfd = -1;
 }
 
-void vd_bridge_free(struct vd_bridge *br) {
+void vk_bridge_free(struct vk_bridge *br) {
     if (!br)
         return;
 
     if (br->bus_pidfd >= 0) {
         if (br->loop)
-            vd_loop_del(br->loop, br->bus_pidfd);
+            vk_loop_del(br->loop, br->bus_pidfd);
         pump_until_exit(br, br->bus_pidfd);
-        if (vd_bus_reap(br->bus_pidfd))
+        if (vk_bus_reap(br->bus_pidfd))
             br->bus_added = true;
         close(br->bus_pidfd);
         br->bus_pidfd = -1;
     }
 
     if (br->bus_added && br->dev) {
-        int fd = vd_bus_spawn_del(br->vdpa_bin, br->name);
+        int fd = vk_bus_spawn_del(br->vdpa_bin, br->name);
 
         if (fd >= 0) {
             pump_until_exit(br, fd);
-            vd_bus_reap(fd);
+            vk_bus_reap(fd);
             close(fd);
         }
         br->bus_added = false;
     }
 
     if (br->loop && br->dev)
-        vd_loop_del(br->loop, vduse_dev_get_fd(br->dev));
+        vk_loop_del(br->loop, vduse_dev_get_fd(br->dev));
 
     if (br->dev)
         vduse_dev_destroy(br->dev);
@@ -946,10 +946,10 @@ void vd_bridge_free(struct vd_bridge *br) {
 
     if (br->queues) {
         for (uint32_t i = 0; i < br->num_queues; i++) {
-            struct vd_bridge_queue *q = &br->queues[i];
+            struct vk_bridge_queue *q = &br->queues[i];
 
             if (br->loop)
-                vd_loop_del(br->loop, q->call_fd);
+                vk_loop_del(br->loop, q->call_fd);
             if (q->kick_fd >= 0)
                 close(q->kick_fd);
             if (q->call_fd >= 0)
@@ -978,10 +978,10 @@ void vd_bridge_free(struct vd_bridge *br) {
     free(br);
 }
 
-const char *vd_bridge_name(const struct vd_bridge *br) {
+const char *vk_bridge_name(const struct vk_bridge *br) {
     return br->name;
 }
 
-uint32_t vd_bridge_device_id(const struct vd_bridge *br) {
+uint32_t vk_bridge_device_id(const struct vk_bridge *br) {
     return br->hello.device_id;
 }

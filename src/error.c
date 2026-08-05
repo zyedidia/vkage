@@ -1,32 +1,32 @@
-#include "vduse/error.h"
+#include "vkage/error.h"
 #include "internal.h"
 
 #include <stdarg.h>
 #include <stdio.h>
 
-static _Thread_local int vd_err;
-static _Thread_local char vd_msg[256];
+static _Thread_local int vk_err;
+static _Thread_local char vk_msg[256];
 
-int vd_set_error(int err, const char *fmt, ...) {
+int vk_set_error(int err, const char *fmt, ...) {
     va_list ap;
 
     va_start(ap, fmt);
-    vsnprintf(vd_msg, sizeof(vd_msg), fmt, ap);
+    vsnprintf(vk_msg, sizeof(vk_msg), fmt, ap);
     va_end(ap);
 
-    vd_err = err;
+    vk_err = err;
     return err;
 }
 
-void vd_clear_error(void) {
-    vd_err = 0;
-    vd_msg[0] = '\0';
+void vk_clear_error(void) {
+    vk_err = 0;
+    vk_msg[0] = '\0';
 }
 
-int vd_last_error(void) {
-    return vd_err;
+int vk_last_error(void) {
+    return vk_err;
 }
 
-const char *vd_last_error_msg(void) {
-    return vd_msg;
+const char *vk_last_error_msg(void) {
+    return vk_msg;
 }

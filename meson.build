@@ -1,5 +1,5 @@
 project(
-  'vduse-blk',
+  'vkage',
   'c',
   version : '0.1.0',
   license : 'GPL-2.0-or-later',
@@ -16,10 +16,10 @@ project(
 
 subdir('deps/libvduse')
 
-vduse_blk_inc = include_directories('include')
+vkage_inc = include_directories('include')
 
-vduse_blk_lib = library(
-  'vduse-blk',
+vkage_lib = library(
+  'vkage',
   files(
     'src/backend_file.c',
     'src/blk.c',
@@ -28,32 +28,32 @@ vduse_blk_lib = library(
     'src/error.c',
     'src/loop.c',
   ),
-  include_directories : [vduse_blk_inc, include_directories('src')],
+  include_directories : [vkage_inc, include_directories('src')],
   dependencies : libvduse_dep,
   install : true,
 )
 
-vduse_blk_dep = declare_dependency(
-  link_with : vduse_blk_lib,
-  include_directories : vduse_blk_inc,
+vkage_dep = declare_dependency(
+  link_with : vkage_lib,
+  include_directories : vkage_inc,
 )
 
 install_headers(
-  'include/vduse/blk.h',
-  'include/vduse/bridge.h',
-  'include/vduse/error.h',
-  'include/vduse/loop.h',
-  subdir : 'vduse',
+  'include/vkage/blk.h',
+  'include/vkage/bridge.h',
+  'include/vkage/error.h',
+  'include/vkage/loop.h',
+  subdir : 'vkage',
 )
 
 executable(
-  'vduse-file-blk',
-  'examples/vduse-file-blk.c',
-  dependencies : vduse_blk_dep,
+  'vkage-file-blk',
+  'examples/vkage-file-blk.c',
+  dependencies : vkage_dep,
 )
 
 executable(
-  'vduse-uml',
-  'examples/vduse-uml.c',
-  dependencies : vduse_blk_dep,
+  'vkage-uml',
+  'examples/vkage-uml.c',
+  dependencies : vkage_dep,
 )

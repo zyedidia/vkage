@@ -20,7 +20,7 @@ static int spawn_pidfd(const char *bin, char *const argv[]) {
 
     rc = posix_spawnp(&pid, bin, NULL, NULL, argv, environ);
     if (rc != 0) {
-        vd_set_error(rc, "spawn %s: %s", bin, strerror(rc));
+        vk_set_error(rc, "spawn %s: %s", bin, strerror(rc));
         return -1;
     }
 
@@ -29,14 +29,14 @@ static int spawn_pidfd(const char *bin, char *const argv[]) {
         rc = errno;
         kill(pid, SIGKILL);
         waitpid(pid, NULL, 0);
-        vd_set_error(rc, "pidfd_open: %s", strerror(rc));
+        vk_set_error(rc, "pidfd_open: %s", strerror(rc));
         return -1;
     }
 
     return fd;
 }
 
-int vd_bus_spawn_add(const char *bin, const char *name, const char *mgmtdev) {
+int vk_bus_spawn_add(const char *bin, const char *name, const char *mgmtdev) {
     char *argv[] = {
         (char *)bin, "dev",     "add",
         "name",      (char *)name,
@@ -47,25 +47,25 @@ int vd_bus_spawn_add(const char *bin, const char *name, const char *mgmtdev) {
     return spawn_pidfd(bin, argv);
 }
 
-int vd_bus_spawn_del(const char *bin, const char *name) {
+int vk_bus_spawn_del(const char *bin, const char *name) {
     char *argv[] = {(char *)bin, "dev", "del", (char *)name, NULL};
 
     return spawn_pidfd(bin, argv);
 }
 
-bool vd_bus_reap(int pidfd) {
+bool vk_bus_reap(int pidfd) {
     siginfo_t si = {0};
 
     if (waitid(P_PIDFD, (id_t)pidfd, &si, WEXITED) < 0) {
-        vd_set_error(errno, "waitid: %s", strerror(errno));
+        vk_set_error(errno, "waitid: %s", strerror(errno));
         return false;
     }
     if (si.si_code != CLD_EXITED) {
-        vd_set_error(EIO, "vdpa killed by signal %d", si.si_status);
+        vk_set_error(EIO, "vdpa killed by signal %d", si.si_status);
         return false;
     }
     if (si.si_status != 0) {
-        vd_set_error(EIO, "vdpa exited with status %d", si.si_status);
+        vk_set_error(EIO, "vdpa exited with status %d", si.si_status);
         return false;
     }
 

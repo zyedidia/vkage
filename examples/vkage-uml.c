@@ -1,4 +1,4 @@
-#include "vduse/bridge.h"
+#include "vkage/bridge.h"
 
 #include <getopt.h>
 #include <inttypes.h>
@@ -15,7 +15,7 @@ static void usage(const char *argv0) {
             "                        yourself with umvirtio.sock=SOCK\n"
             "  -a, --uml-args ARGS   extra UML arguments, space separated\n"
             "  -S, --sock PATH       handshake socket\n"
-            "                        (default /tmp/vduse-bridge-NAME.sock)\n"
+            "                        (default /tmp/vkage-bridge-NAME.sock)\n"
             "  -t, --timeout MS      handshake timeout (default 30000)\n"
             "  -V, --vdpa-bin PATH   vdpa binary (default \"vdpa\")\n"
             "  -h, --help\n"
@@ -41,9 +41,9 @@ int main(int argc, char **argv) {
     };
     static const int sigs[] = {SIGINT, SIGTERM};
 
-    struct vd_bridge_opts opts = {0};
-    struct vd_bridge *br = NULL;
-    struct vd_loop *loop = NULL;
+    struct vk_bridge_opts opts = {0};
+    struct vk_bridge *br = NULL;
+    struct vk_loop *loop = NULL;
     int rc = 1;
     int c;
 
@@ -82,43 +82,43 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (!vd_loop_new(&loop)) {
-        fprintf(stderr, "loop: %s\n", vd_last_error_msg());
+    if (!vk_loop_new(&loop)) {
+        fprintf(stderr, "loop: %s\n", vk_last_error_msg());
         return 1;
     }
 
-    if (!vd_loop_catch_signals(loop, sigs, 2)) {
-        fprintf(stderr, "signals: %s\n", vd_last_error_msg());
-        vd_loop_free(loop);
+    if (!vk_loop_catch_signals(loop, sigs, 2)) {
+        fprintf(stderr, "signals: %s\n", vk_last_error_msg());
+        vk_loop_free(loop);
         return 1;
     }
 
     // Blocks until UML connects and declares what it is.
-    if (!vd_bridge_new(opts, &br)) {
-        fprintf(stderr, "bridge: %s\n", vd_last_error_msg());
-        vd_loop_free(loop);
+    if (!vk_bridge_new(opts, &br)) {
+        fprintf(stderr, "bridge: %s\n", vk_last_error_msg());
+        vk_loop_free(loop);
         return 1;
     }
 
     printf("created /dev/vduse/%s, virtio device id %" PRIu32 "\n",
-           vd_bridge_name(br), vd_bridge_device_id(br));
+           vk_bridge_name(br), vk_bridge_device_id(br));
     fflush(stdout);
 
-    if (!vd_bridge_attach(br, loop)) {
-        fprintf(stderr, "attach: %s\n", vd_last_error_msg());
+    if (!vk_bridge_attach(br, loop)) {
+        fprintf(stderr, "attach: %s\n", vk_last_error_msg());
         goto out;
     }
 
-    if (!vd_loop_run(loop)) {
-        fprintf(stderr, "run: %s\n", vd_last_error_msg());
+    if (!vk_loop_run(loop)) {
+        fprintf(stderr, "run: %s\n", vk_last_error_msg());
         goto out;
     }
 
     rc = 0;
 
 out:
-    // Must precede vd_loop_free(), same as vd_blk_free().
-    vd_bridge_free(br);
-    vd_loop_free(loop);
+    // Must precede vk_loop_free(), same as vk_blk_free().
+    vk_bridge_free(br);
+    vk_loop_free(loop);
     return rc;
 }

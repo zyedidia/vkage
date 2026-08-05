@@ -1,4 +1,4 @@
-#include "vduse/loop.h"
+#include "vkage/loop.h"
 
 #include "internal.h"
 
@@ -13,21 +13,21 @@
 
 #define MAX_EVENTS 64
 
-struct vd_loop_entry {
-    vd_loop_cb cb;
+struct vk_loop_entry {
+    vk_loop_cb cb;
     void *user;
     uint32_t gen;
     bool active;
 };
 
-struct vd_loop {
+struct vk_loop {
     int epfd;
 
     // Indexed by fd. epoll_data carries fd plus the generation that was
     // current when it was registered, so an event queued for a descriptor
     // that a callback removed earlier in the same batch is discarded
     // instead of dispatched.
-    struct vd_loop_entry *ents;
+    struct vk_loop_entry *ents;
     int n_ents;
     uint32_t next_gen;
 
@@ -39,8 +39,8 @@ struct vd_loop {
     bool mask_saved;
 };
 
-static bool ensure_capacity(struct vd_loop *loop, int fd) {
-    struct vd_loop_entry *ents;
+static bool ensure_capacity(struct vk_loop *loop, int fd) {
+    struct vk_loop_entry *ents;
     int n;
 
     if (fd < loop->n_ents)
@@ -52,7 +52,7 @@ static bool ensure_capacity(struct vd_loop *loop, int fd) {
 
     ents = realloc(loop->ents, (size_t)n * sizeof(*ents));
     if (!ents) {
-        vd_set_error(ENOMEM, "out of memory");
+        vk_set_error(ENOMEM, "out of memory");
         return false;
     }
 
@@ -63,17 +63,17 @@ static bool ensure_capacity(struct vd_loop *loop, int fd) {
     return true;
 }
 
-bool vd_loop_new(struct vd_loop **out) {
-    struct vd_loop *loop;
+bool vk_loop_new(struct vk_loop **out) {
+    struct vk_loop *loop;
 
     if (!out) {
-        vd_set_error(EINVAL, "out is NULL");
+        vk_set_error(EINVAL, "out is NULL");
         return false;
     }
 
     loop = calloc(1, sizeof(*loop));
     if (!loop) {
-        vd_set_error(ENOMEM, "out of memory");
+        vk_set_error(ENOMEM, "out of memory");
         return false;
     }
 
@@ -82,7 +82,7 @@ bool vd_loop_new(struct vd_loop **out) {
 
     loop->epfd = epoll_create1(EPOLL_CLOEXEC);
     if (loop->epfd < 0) {
-        vd_set_error(errno, "epoll_create1: %s", strerror(errno));
+        vk_set_error(errno, "epoll_create1: %s", strerror(errno));
         free(loop);
         return false;
     }
@@ -91,7 +91,7 @@ bool vd_loop_new(struct vd_loop **out) {
     return true;
 }
 
-void vd_loop_free(struct vd_loop *loop) {
+void vk_loop_free(struct vk_loop *loop) {
     if (!loop)
         return;
 
@@ -106,13 +106,13 @@ void vd_loop_free(struct vd_loop *loop) {
     free(loop);
 }
 
-bool vd_loop_add(struct vd_loop *loop, int fd, vd_loop_cb cb, void *user) {
+bool vk_loop_add(struct vk_loop *loop, int fd, vk_loop_cb cb, void *user) {
     struct epoll_event ev;
     bool present;
     int rc;
 
     if (fd < 0 || !cb) {
-        vd_set_error(EINVAL, "bad fd or callback");
+        vk_set_error(EINVAL, "bad fd or callback");
         return false;
     }
     if (!ensure_capacity(loop, fd))
@@ -140,15 +140,15 @@ bool vd_loop_add(struct vd_loop *loop, int fd, vd_loop_cb cb, void *user) {
     if (rc < 0) {
         if (!present)
             loop->ents[fd].active = false;
-        vd_set_error(errno, "epoll_ctl add: %s", strerror(errno));
+        vk_set_error(errno, "epoll_ctl add: %s", strerror(errno));
         return false;
     }
 
     return true;
 }
 
-bool vd_loop_del(struct vd_loop *loop, int fd) {
-    // Tolerate descriptors that were never registered; vd_blk_free() relies
+bool vk_loop_del(struct vk_loop *loop, int fd) {
+    // Tolerate descriptors that were never registered; vk_blk_free() relies
     // on this when unwinding a partially attached device.
     if (fd < 0 || fd >= loop->n_ents || !loop->ents[fd].active)
         return true;
@@ -157,7 +157,7 @@ bool vd_loop_del(struct vd_loop *loop, int fd) {
 
     if (epoll_ctl(loop->epfd, EPOLL_CTL_DEL, fd, NULL) < 0 &&
         errno != EBADF && errno != ENOENT) {
-        vd_set_error(errno, "epoll_ctl del: %s", strerror(errno));
+        vk_set_error(errno, "epoll_ctl del: %s", strerror(errno));
         return false;
     }
 
@@ -165,20 +165,20 @@ bool vd_loop_del(struct vd_loop *loop, int fd) {
 }
 
 static void on_signal(int fd, void *user) {
-    struct vd_loop *loop = user;
+    struct vk_loop *loop = user;
     struct signalfd_siginfo si;
 
     while (read(fd, &si, sizeof(si)) == (ssize_t)sizeof(si))
         ;
 
-    vd_loop_stop(loop);
+    vk_loop_stop(loop);
 }
 
-bool vd_loop_catch_signals(struct vd_loop *loop, const int *signals, int n) {
+bool vk_loop_catch_signals(struct vk_loop *loop, const int *signals, int n) {
     sigset_t mask;
 
     if (loop->sigfd >= 0) {
-        vd_set_error(EEXIST, "signals are already being caught");
+        vk_set_error(EEXIST, "signals are already being caught");
         return false;
     }
 
@@ -187,21 +187,21 @@ bool vd_loop_catch_signals(struct vd_loop *loop, const int *signals, int n) {
         sigaddset(&mask, signals[i]);
 
     if (sigprocmask(SIG_BLOCK, &mask, &loop->oldmask) < 0) {
-        vd_set_error(errno, "sigprocmask: %s", strerror(errno));
+        vk_set_error(errno, "sigprocmask: %s", strerror(errno));
         return false;
     }
     loop->mask_saved = true;
 
     loop->sigfd = signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC);
     if (loop->sigfd < 0) {
-        vd_set_error(errno, "signalfd: %s", strerror(errno));
+        vk_set_error(errno, "signalfd: %s", strerror(errno));
         return false;
     }
 
-    return vd_loop_add(loop, loop->sigfd, on_signal, loop);
+    return vk_loop_add(loop, loop->sigfd, on_signal, loop);
 }
 
-bool vd_loop_run(struct vd_loop *loop) {
+bool vk_loop_run(struct vk_loop *loop) {
     struct epoll_event evs[MAX_EVENTS];
 
     loop->stopping = false;
@@ -213,15 +213,15 @@ bool vd_loop_run(struct vd_loop *loop) {
         if (n < 0) {
             if (errno == EINTR)
                 continue;
-            vd_set_error(errno, "epoll_wait: %s", strerror(errno));
+            vk_set_error(errno, "epoll_wait: %s", strerror(errno));
             return false;
         }
 
         for (int i = 0; i < n; i++) {
             int fd = (int)(uint32_t)(evs[i].data.u64 & 0xffffffffu);
             uint32_t gen = (uint32_t)(evs[i].data.u64 >> 32);
-            struct vd_loop_entry *e;
-            vd_loop_cb cb;
+            struct vk_loop_entry *e;
+            vk_loop_cb cb;
             void *user;
 
             if (fd < 0 || fd >= loop->n_ents)
@@ -231,7 +231,7 @@ bool vd_loop_run(struct vd_loop *loop) {
             if (!e->active || e->gen != gen)
                 continue;
 
-            // Copied out because the callback may vd_loop_add() and
+            // Copied out because the callback may vk_loop_add() and
             // reallocate the table under us.
             cb = e->cb;
             user = e->user;
@@ -242,11 +242,11 @@ bool vd_loop_run(struct vd_loop *loop) {
     return !loop->failed;
 }
 
-void vd_loop_stop(struct vd_loop *loop) {
+void vk_loop_stop(struct vk_loop *loop) {
     loop->stopping = true;
 }
 
-void vd_loop_fail(struct vd_loop *loop) {
+void vk_loop_fail(struct vk_loop *loop) {
     loop->failed = true;
     loop->stopping = true;
 }

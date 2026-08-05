@@ -1,4 +1,4 @@
-#include "vduse/blk.h"
+#include "vkage/blk.h"
 
 #include <getopt.h>
 #include <inttypes.h>
@@ -39,11 +39,11 @@ int main(int argc, char **argv) {
     };
     static const int sigs[] = {SIGINT, SIGTERM};
 
-    struct vd_backend_file_opts fopts = {0};
-    struct vd_blk_opts bopts = {0};
-    struct vd_blk_backend be;
-    struct vd_loop *loop = NULL;
-    struct vd_blk *blk = NULL;
+    struct vk_backend_file_opts fopts = {0};
+    struct vk_blk_opts bopts = {0};
+    struct vk_blk_backend be;
+    struct vk_loop *loop = NULL;
+    struct vk_blk *blk = NULL;
     uint64_t size = 0;
     int rc = 1;
     int c;
@@ -93,55 +93,55 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (!vd_backend_file_open(fopts, &be, &size)) {
-        fprintf(stderr, "backend: %s\n", vd_last_error_msg());
+    if (!vk_backend_file_open(fopts, &be, &size)) {
+        fprintf(stderr, "backend: %s\n", vk_last_error_msg());
         return 1;
     }
 
     if (bopts.capacity == 0)
         bopts.capacity = size;
 
-    if (!vd_loop_new(&loop)) {
-        fprintf(stderr, "loop: %s\n", vd_last_error_msg());
+    if (!vk_loop_new(&loop)) {
+        fprintf(stderr, "loop: %s\n", vk_last_error_msg());
         be.destroy(be.priv);
         return 1;
     }
 
-    if (!vd_loop_catch_signals(loop, sigs, 2)) {
-        fprintf(stderr, "signals: %s\n", vd_last_error_msg());
+    if (!vk_loop_catch_signals(loop, sigs, 2)) {
+        fprintf(stderr, "signals: %s\n", vk_last_error_msg());
         be.destroy(be.priv);
-        vd_loop_free(loop);
+        vk_loop_free(loop);
         return 1;
     }
 
     // The device takes ownership of the backend from here on.
-    if (!vd_blk_new(bopts, be, &blk)) {
-        fprintf(stderr, "device: %s\n", vd_last_error_msg());
+    if (!vk_blk_new(bopts, be, &blk)) {
+        fprintf(stderr, "device: %s\n", vk_last_error_msg());
         be.destroy(be.priv);
-        vd_loop_free(loop);
+        vk_loop_free(loop);
         return 1;
     }
 
-    printf("created /dev/vduse/%s, %" PRIu64 " bytes\n", vd_blk_name(blk),
-           vd_blk_capacity(blk));
+    printf("created /dev/vduse/%s, %" PRIu64 " bytes\n", vk_blk_name(blk),
+           vk_blk_capacity(blk));
     fflush(stdout);
 
-    if (!vd_blk_attach(blk, loop)) {
-        fprintf(stderr, "attach: %s\n", vd_last_error_msg());
+    if (!vk_blk_attach(blk, loop)) {
+        fprintf(stderr, "attach: %s\n", vk_last_error_msg());
         goto out;
     }
 
-    if (!vd_loop_run(loop)) {
-        fprintf(stderr, "run: %s\n", vd_last_error_msg());
+    if (!vk_loop_run(loop)) {
+        fprintf(stderr, "run: %s\n", vk_last_error_msg());
         goto out;
     }
 
     rc = 0;
 
 out:
-    // Must precede vd_loop_free(): teardown drives a reset whose
+    // Must precede vk_loop_free(): teardown drives a reset whose
     // disable_queue callback deregisters the kick fd from the loop.
-    vd_blk_free(blk);
-    vd_loop_free(loop);
+    vk_blk_free(blk);
+    vk_loop_free(loop);
     return rc;
 }

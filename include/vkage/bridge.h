@@ -3,12 +3,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "vduse/error.h"
-#include "vduse/loop.h"
+#include "vkage/error.h"
+#include "vkage/loop.h"
 
 // Re-export a virtio device implemented inside a UML instance.
 //
-// This sits parallel to vd_blk rather than beneath it. vd_blk models a
+// This sits parallel to vk_blk rather than beneath it. vk_blk models a
 // virtio-blk device and asks a backend for storage; the bridge models
 // nothing and relays descriptors. Device identity -- id, features, config
 // space, queue geometry -- arrives from UML at handshake time and is fed
@@ -19,9 +19,9 @@
 // could: there is no file backend on this path, and a request too large
 // for UML's slot size can only be failed bluntly, since the bridge does
 // not know which byte is the status byte.
-struct vd_bridge;
+struct vk_bridge;
 
-struct vd_bridge_opts {
+struct vk_bridge_opts {
     // VDUSE device name; becomes /dev/vduse/$name. Required.
     const char *name;
 
@@ -47,14 +47,14 @@ struct vd_bridge_opts {
 
 // Waits for the UML instance to hand over its identity, then creates the
 // VDUSE device. Blocks for up to handshake_timeout_ms.
-bool vd_bridge_new(struct vd_bridge_opts opts, struct vd_bridge **out);
+bool vk_bridge_new(struct vk_bridge_opts opts, struct vk_bridge **out);
 
 // Registers descriptors with the loop and attaches to the vDPA bus.
-bool vd_bridge_attach(struct vd_bridge *br, struct vd_loop *loop);
+bool vk_bridge_attach(struct vk_bridge *br, struct vk_loop *loop);
 
-void vd_bridge_free(struct vd_bridge *br);
+void vk_bridge_free(struct vk_bridge *br);
 
-const char *vd_bridge_name(const struct vd_bridge *br);
+const char *vk_bridge_name(const struct vk_bridge *br);
 
 // virtio device id UML declared, e.g. 2 for block.
-uint32_t vd_bridge_device_id(const struct vd_bridge *br);
+uint32_t vk_bridge_device_id(const struct vk_bridge *br);

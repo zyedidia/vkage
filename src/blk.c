@@ -1,4 +1,4 @@
-#include "vduse/blk.h"
+#include "vkage/blk.h"
 
 #include "bus.h"
 #include "internal.h"
@@ -26,18 +26,18 @@
 
 #define NUM_QUEUES 1
 
-struct vd_blk_req {
+struct vk_blk_req {
     VduseVirtqElement elem;
 
-    struct vd_blk *blk;
+    struct vk_blk *blk;
     VduseVirtq *vq;
     uint32_t used_len;
 };
 
-struct vd_blk {
+struct vk_blk {
     VduseDev *dev;
-    struct vd_loop *loop;
-    struct vd_blk_backend be;
+    struct vk_loop *loop;
+    struct vk_blk_backend be;
 
     char *name;
     char *vdpa_bin;
@@ -50,7 +50,7 @@ struct vd_blk {
     uint32_t queue_size;
     bool readonly;
 
-    uint8_t serial[VD_BLK_ID_BYTES];
+    uint8_t serial[VK_BLK_ID_BYTES];
     bool has_serial;
 
     // -1 when no queue is enabled. Tracked because vduse_dev_destroy() frees
@@ -79,19 +79,19 @@ static uint64_t iov_total(const struct iovec *iov, int n) {
 }
 
 // Reject requests that fall outside the advertised capacity. The division
-// also guards the sector * VD_BLK_SECTOR multiply below from wrapping, which
+// also guards the sector * VK_BLK_SECTOR multiply below from wrapping, which
 // would otherwise turn an out-of-range request into one aimed at block zero.
-static bool in_range(const struct vd_blk *blk, uint64_t sector, uint64_t len) {
+static bool in_range(const struct vk_blk *blk, uint64_t sector, uint64_t len) {
     uint64_t offset;
 
-    if (sector > blk->capacity / VD_BLK_SECTOR)
+    if (sector > blk->capacity / VK_BLK_SECTOR)
         return false;
 
-    offset = sector * VD_BLK_SECTOR;
+    offset = sector * VK_BLK_SECTOR;
     return len <= blk->capacity - offset;
 }
 
-void vd_blk_complete(struct vd_blk_req *req, uint8_t status) {
+void vk_blk_complete(struct vk_blk_req *req, uint8_t status) {
     VduseVirtqElement *e = &req->elem;
     uint32_t len = req->used_len;
 
@@ -112,7 +112,7 @@ void vd_blk_complete(struct vd_blk_req *req, uint8_t status) {
     free(req);
 }
 
-static void handle_req(struct vd_blk *blk, struct vd_blk_req *req) {
+static void handle_req(struct vk_blk *blk, struct vk_blk_req *req) {
     VduseVirtqElement *e = &req->elem;
     struct virtio_blk_outhdr hdr;
     const struct iovec *data;
@@ -124,7 +124,7 @@ static void handle_req(struct vd_blk *blk, struct vd_blk_req *req) {
     if (e->out_num < 1 || e->in_num < 1 ||
             e->in_sg[e->in_num - 1].iov_len < 1) {
         req->used_len = 0;
-        vd_blk_complete(req, VIRTIO_BLK_S_IOERR);
+        vk_blk_complete(req, VIRTIO_BLK_S_IOERR);
         return;
     }
 
@@ -133,7 +133,7 @@ static void handle_req(struct vd_blk *blk, struct vd_blk_req *req) {
     // out-descriptor, which we do not do.
     if (e->out_sg[0].iov_len != sizeof(hdr)) {
         req->used_len = 1;
-        vd_blk_complete(req, VIRTIO_BLK_S_UNSUPP);
+        vk_blk_complete(req, VIRTIO_BLK_S_UNSUPP);
         return;
     }
 
@@ -148,19 +148,19 @@ static void handle_req(struct vd_blk *blk, struct vd_blk_req *req) {
         len = iov_total(data, ndata);
         if (!in_range(blk, sector, len)) {
             req->used_len = 1;
-            vd_blk_complete(req, VIRTIO_BLK_S_IOERR);
+            vk_blk_complete(req, VIRTIO_BLK_S_IOERR);
             return;
         }
         req->used_len = (uint32_t)len + 1;
         if (!blk->be.readv(blk->be.priv, req, data, ndata,
-                           sector * VD_BLK_SECTOR))
-            vd_blk_complete(req, VIRTIO_BLK_S_IOERR);
+                           sector * VK_BLK_SECTOR))
+            vk_blk_complete(req, VIRTIO_BLK_S_IOERR);
         return;
 
     case VIRTIO_BLK_T_OUT:
         if (blk->readonly) {
             req->used_len = 1;
-            vd_blk_complete(req, VIRTIO_BLK_S_IOERR);
+            vk_blk_complete(req, VIRTIO_BLK_S_IOERR);
             return;
         }
         data = e->out_sg + 1; // out_sg[0] is the header
@@ -168,19 +168,19 @@ static void handle_req(struct vd_blk *blk, struct vd_blk_req *req) {
         len = iov_total(data, ndata);
         if (!in_range(blk, sector, len)) {
             req->used_len = 1;
-            vd_blk_complete(req, VIRTIO_BLK_S_IOERR);
+            vk_blk_complete(req, VIRTIO_BLK_S_IOERR);
             return;
         }
         req->used_len = 1;
         if (!blk->be.writev(blk->be.priv, req, data, ndata,
-                            sector * VD_BLK_SECTOR))
-            vd_blk_complete(req, VIRTIO_BLK_S_IOERR);
+                            sector * VK_BLK_SECTOR))
+            vk_blk_complete(req, VIRTIO_BLK_S_IOERR);
         return;
 
     case VIRTIO_BLK_T_FLUSH:
         req->used_len = 1;
         if (!blk->be.flush(blk->be.priv, req))
-            vd_blk_complete(req, VIRTIO_BLK_S_IOERR);
+            vk_blk_complete(req, VIRTIO_BLK_S_IOERR);
         return;
 
     case VIRTIO_BLK_T_GET_ID: {
@@ -188,14 +188,14 @@ static void handle_req(struct vd_blk *blk, struct vd_blk_req *req) {
 
         if (!blk->has_serial || e->in_num < 2) {
             req->used_len = 1;
-            vd_blk_complete(req, VIRTIO_BLK_S_UNSUPP);
+            vk_blk_complete(req, VIRTIO_BLK_S_UNSUPP);
             return;
         }
-        n = e->in_sg[0].iov_len < VD_BLK_ID_BYTES ? e->in_sg[0].iov_len
-                                                  : VD_BLK_ID_BYTES;
+        n = e->in_sg[0].iov_len < VK_BLK_ID_BYTES ? e->in_sg[0].iov_len
+                                                  : VK_BLK_ID_BYTES;
         memcpy(e->in_sg[0].iov_base, blk->serial, n);
         req->used_len = (uint32_t)n + 1;
-        vd_blk_complete(req, VIRTIO_BLK_S_OK);
+        vk_blk_complete(req, VIRTIO_BLK_S_OK);
         return;
     }
 
@@ -206,32 +206,32 @@ static void handle_req(struct vd_blk *blk, struct vd_blk_req *req) {
         if (!blk->be.discard || e->out_num < 2 ||
             e->out_sg[1].iov_len < sizeof(d)) {
             req->used_len = 1;
-            vd_blk_complete(req, VIRTIO_BLK_S_UNSUPP);
+            vk_blk_complete(req, VIRTIO_BLK_S_UNSUPP);
             return;
         }
         memcpy(&d, e->out_sg[1].iov_base, sizeof(d));
         sector = le64toh(d.sector);
-        len = (uint64_t)le32toh(d.num_sectors) * VD_BLK_SECTOR;
+        len = (uint64_t)le32toh(d.num_sectors) * VK_BLK_SECTOR;
         if (!in_range(blk, sector, len)) {
             req->used_len = 1;
-            vd_blk_complete(req, VIRTIO_BLK_S_IOERR);
+            vk_blk_complete(req, VIRTIO_BLK_S_IOERR);
             return;
         }
         req->used_len = 1;
-        if (!blk->be.discard(blk->be.priv, req, sector * VD_BLK_SECTOR, len))
-            vd_blk_complete(req, VIRTIO_BLK_S_IOERR);
+        if (!blk->be.discard(blk->be.priv, req, sector * VK_BLK_SECTOR, len))
+            vk_blk_complete(req, VIRTIO_BLK_S_IOERR);
         return;
     }
 
     default:
         req->used_len = 1;
-        vd_blk_complete(req, VIRTIO_BLK_S_UNSUPP);
+        vk_blk_complete(req, VIRTIO_BLK_S_UNSUPP);
         return;
     }
 }
 
-static void drain_queue(struct vd_blk *blk, VduseVirtq *vq) {
-    struct vd_blk_req *req;
+static void drain_queue(struct vk_blk *blk, VduseVirtq *vq) {
+    struct vk_blk_req *req;
 
     while ((req = vduse_queue_pop(vq, sizeof(*req))) != NULL) {
         req->blk = blk;
@@ -242,7 +242,7 @@ static void drain_queue(struct vd_blk *blk, VduseVirtq *vq) {
 }
 
 static void on_kick(int fd, void *user) {
-    struct vd_blk *blk = user;
+    struct vk_blk *blk = user;
     uint64_t counter;
 
     // The kick fd is an EFD_NONBLOCK eventfd and one read clears the counter.
@@ -253,36 +253,36 @@ static void on_kick(int fd, void *user) {
 }
 
 static void on_ctrl(int fd, void *user) {
-    struct vd_blk *blk = user;
+    struct vk_blk *blk = user;
 
     (void)fd;
     if (vduse_dev_handler(blk->dev) < 0) {
-        vd_set_error(EIO, "vduse control channel failed");
-        vd_loop_fail(blk->loop);
+        vk_set_error(EIO, "vduse control channel failed");
+        vk_loop_fail(blk->loop);
     }
 }
 
 static void on_bus_added(int fd, void *user) {
-    struct vd_blk *blk = user;
+    struct vk_blk *blk = user;
 
-    vd_loop_del(blk->loop, fd);
+    vk_loop_del(blk->loop, fd);
     blk->bus_pidfd = -1;
 
-    if (vd_bus_reap(fd))
+    if (vk_bus_reap(fd))
         blk->bus_added = true;
     else
-        vd_loop_fail(blk->loop);
+        vk_loop_fail(blk->loop);
 
     close(fd);
 }
 
 static void enable_queue(VduseDev *dev, VduseVirtq *vq) {
-    struct vd_blk *blk = vduse_dev_get_priv(dev);
+    struct vk_blk *blk = vduse_dev_get_priv(dev);
 
     if (!blk->loop)
         return;
 
-    if (!vd_loop_add(blk->loop, vduse_queue_get_fd(vq), on_kick, blk))
+    if (!vk_loop_add(blk->loop, vduse_queue_get_fd(vq), on_kick, blk))
         return;
 
     blk->kick_fd = vduse_queue_get_fd(vq);
@@ -293,12 +293,12 @@ static void enable_queue(VduseDev *dev, VduseVirtq *vq) {
 }
 
 static void disable_queue(VduseDev *dev, VduseVirtq *vq) {
-    struct vd_blk *blk = vduse_dev_get_priv(dev);
+    struct vk_blk *blk = vduse_dev_get_priv(dev);
 
     // libvduse closes the kick fd immediately after this returns, so drop
     // our copy without closing it.
     if (blk->loop)
-        vd_loop_del(blk->loop, vduse_queue_get_fd(vq));
+        vk_loop_del(blk->loop, vduse_queue_get_fd(vq));
 
     blk->kick_fd = -1;
 }
@@ -308,11 +308,11 @@ static const VduseOps blk_ops = {
     .disable_queue = disable_queue,
 };
 
-static void build_config(const struct vd_blk *blk,
+static void build_config(const struct vk_blk *blk,
                          struct virtio_blk_config *cfg) {
     memset(cfg, 0, sizeof(*cfg));
 
-    cfg->capacity = htole64(blk->capacity / VD_BLK_SECTOR);
+    cfg->capacity = htole64(blk->capacity / VK_BLK_SECTOR);
     cfg->seg_max = htole32(blk->queue_size - 2); // header + status
     cfg->size_max = htole32(blk->size_max);
     cfg->blk_size = htole32(blk->block_size);
@@ -322,49 +322,49 @@ static void build_config(const struct vd_blk *blk,
         cfg->max_discard_sectors = htole32(UINT32_MAX);
         cfg->max_discard_seg = htole32(1);
         cfg->discard_sector_alignment =
-            htole32(blk->block_size / VD_BLK_SECTOR);
+            htole32(blk->block_size / VK_BLK_SECTOR);
     }
 }
 
-static bool validate(const struct vd_blk *blk) {
+static bool validate(const struct vk_blk *blk) {
     if (blk->block_size != 512 && blk->block_size != 4096) {
-        vd_set_error(EINVAL, "block_size %u must be 512 or 4096",
+        vk_set_error(EINVAL, "block_size %u must be 512 or 4096",
                      blk->block_size);
         return false;
     }
     if (blk->queue_size < 4 || blk->queue_size > 1024 ||
         (blk->queue_size & (blk->queue_size - 1)) != 0) {
-        vd_set_error(EINVAL, "queue_size %u must be a power of two in [4,1024]",
+        vk_set_error(EINVAL, "queue_size %u must be a power of two in [4,1024]",
                      blk->queue_size);
         return false;
     }
     if (blk->size_max < blk->block_size) {
-        vd_set_error(EINVAL, "size_max %u must be at least block_size %u",
+        vk_set_error(EINVAL, "size_max %u must be at least block_size %u",
                      blk->size_max, blk->block_size);
         return false;
     }
     if (blk->capacity == 0) {
-        vd_set_error(EINVAL, "capacity is zero");
+        vk_set_error(EINVAL, "capacity is zero");
         return false;
     }
     return true;
 }
 
-bool vd_blk_new(struct vd_blk_opts opts, struct vd_blk_backend backend,
-                struct vd_blk **out) {
+bool vk_blk_new(struct vk_blk_opts opts, struct vk_blk_backend backend,
+                struct vk_blk **out) {
     struct virtio_blk_config cfg;
-    struct vd_blk *blk;
+    struct vk_blk *blk;
     uint64_t features;
 
     if (!opts.name || !out || !backend.readv || !backend.writev ||
         !backend.flush) {
-        vd_set_error(EINVAL, "name, out and readv/writev/flush are required");
+        vk_set_error(EINVAL, "name, out and readv/writev/flush are required");
         return false;
     }
 
     blk = calloc(1, sizeof(*blk));
     if (!blk) {
-        vd_set_error(ENOMEM, "out of memory");
+        vk_set_error(ENOMEM, "out of memory");
         return false;
     }
 
@@ -386,13 +386,13 @@ bool vd_blk_new(struct vd_blk_opts opts, struct vd_blk_backend backend,
     blk->vdpa_bin = strdup(opts.vdpa_bin ? opts.vdpa_bin : DEFAULT_VDPA_BIN);
     blk->mgmtdev = strdup(opts.mgmtdev ? opts.mgmtdev : DEFAULT_MGMTDEV);
     if (!blk->name || !blk->vdpa_bin || !blk->mgmtdev) {
-        vd_set_error(ENOMEM, "out of memory");
+        vk_set_error(ENOMEM, "out of memory");
         goto err;
     }
 
     if (opts.serial) {
         memcpy(blk->serial, opts.serial,
-               strnlen(opts.serial, VD_BLK_ID_BYTES));
+               strnlen(opts.serial, VK_BLK_ID_BYTES));
         blk->has_serial = true;
     }
 
@@ -412,7 +412,7 @@ bool vd_blk_new(struct vd_blk_opts opts, struct vd_blk_backend backend,
                                 NUM_QUEUES, sizeof(cfg), (char *)&cfg,
                                 &blk_ops, blk);
     if (!blk->dev) {
-        vd_set_error(errno ? errno : EIO, "failed to create vduse device %s",
+        vk_set_error(errno ? errno : EIO, "failed to create vduse device %s",
                      blk->name);
         goto err;
     }
@@ -420,12 +420,12 @@ bool vd_blk_new(struct vd_blk_opts opts, struct vd_blk_backend backend,
     // Must precede setup_queue.
     if (opts.reconnect_log &&
         vduse_set_reconnect_log_file(blk->dev, opts.reconnect_log) < 0) {
-        vd_set_error(EIO, "failed to open reconnect log %s",
+        vk_set_error(EIO, "failed to open reconnect log %s",
                      opts.reconnect_log);
         goto err;
     }
 
-    // The virtqueue is set up in vd_blk_attach(), not here: setup_queue can
+    // The virtqueue is set up in vk_blk_attach(), not here: setup_queue can
     // invoke enable_queue immediately when adopting a device the driver
     // already has live, and that needs blk->loop to be set.
 
@@ -442,10 +442,10 @@ err:
     return false;
 }
 
-bool vd_blk_attach(struct vd_blk *blk, struct vd_loop *loop) {
+bool vk_blk_attach(struct vk_blk *blk, struct vk_loop *loop) {
     blk->loop = loop;
 
-    if (!vd_loop_add(loop, vduse_dev_get_fd(blk->dev), on_ctrl, blk))
+    if (!vk_loop_add(loop, vduse_dev_get_fd(blk->dev), on_ctrl, blk))
         return false;
 
     if (blk->be.attach && !blk->be.attach(blk->be.priv, loop))
@@ -455,17 +455,17 @@ bool vd_blk_attach(struct vd_blk *blk, struct vd_loop *loop) {
     // bus attach below, since queue configuration freezes once the device
     // joins the vDPA bus.
     if (vduse_dev_setup_queue(blk->dev, 0, blk->queue_size) < 0) {
-        vd_set_error(EIO, "failed to set up virtqueue");
+        vk_set_error(EIO, "failed to set up virtqueue");
         return false;
     }
 
     // The child blocks until the probe is answered, which cannot happen
     // until the caller runs the loop.
-    blk->bus_pidfd = vd_bus_spawn_add(blk->vdpa_bin, blk->name, blk->mgmtdev);
+    blk->bus_pidfd = vk_bus_spawn_add(blk->vdpa_bin, blk->name, blk->mgmtdev);
     if (blk->bus_pidfd < 0)
         return false;
 
-    if (!vd_loop_add(loop, blk->bus_pidfd, on_bus_added, blk)) {
+    if (!vk_loop_add(loop, blk->bus_pidfd, on_bus_added, blk)) {
         close(blk->bus_pidfd);
         blk->bus_pidfd = -1;
         return false;
@@ -474,10 +474,10 @@ bool vd_blk_attach(struct vd_blk *blk, struct vd_loop *loop) {
     return true;
 }
 
-// Service the control fd until the child behind pidfd exits. vd_blk_free()
+// Service the control fd until the child behind pidfd exits. vk_blk_free()
 // runs after the caller's loop has stopped, but `vdpa dev del` drives a
 // reset whose SET_STATUS still needs an answer.
-static void pump_until_exit(struct vd_blk *blk, int pidfd) {
+static void pump_until_exit(struct vk_blk *blk, int pidfd) {
     uint64_t deadline = now_ms() + blk->bus_timeout_ms;
     struct pollfd fds[2] = {
         {.fd = vduse_dev_get_fd(blk->dev), .events = POLLIN},
@@ -489,7 +489,7 @@ static void pump_until_exit(struct vd_blk *blk, int pidfd) {
         int rc;
 
         if (now >= deadline) {
-            vd_set_error(ETIMEDOUT, "timed out waiting for %s", blk->vdpa_bin);
+            vk_set_error(ETIMEDOUT, "timed out waiting for %s", blk->vdpa_bin);
             return;
         }
 
@@ -497,7 +497,7 @@ static void pump_until_exit(struct vd_blk *blk, int pidfd) {
         if (rc < 0) {
             if (errno == EINTR)
                 continue;
-            vd_set_error(errno, "poll: %s", strerror(errno));
+            vk_set_error(errno, "poll: %s", strerror(errno));
             return;
         }
         if (rc == 0)
@@ -510,27 +510,27 @@ static void pump_until_exit(struct vd_blk *blk, int pidfd) {
     }
 }
 
-void vd_blk_free(struct vd_blk *blk) {
+void vk_blk_free(struct vk_blk *blk) {
     if (!blk)
         return;
 
     // An add may still be in flight if the loop stopped early.
     if (blk->bus_pidfd >= 0) {
         if (blk->loop)
-            vd_loop_del(blk->loop, blk->bus_pidfd);
+            vk_loop_del(blk->loop, blk->bus_pidfd);
         pump_until_exit(blk, blk->bus_pidfd);
-        if (vd_bus_reap(blk->bus_pidfd))
+        if (vk_bus_reap(blk->bus_pidfd))
             blk->bus_added = true;
         close(blk->bus_pidfd);
         blk->bus_pidfd = -1;
     }
 
     if (blk->bus_added) {
-        int fd = vd_bus_spawn_del(blk->vdpa_bin, blk->name);
+        int fd = vk_bus_spawn_del(blk->vdpa_bin, blk->name);
 
         if (fd >= 0) {
             pump_until_exit(blk, fd);
-            vd_bus_reap(fd);
+            vk_bus_reap(fd);
             close(fd);
         }
         blk->bus_added = false;
@@ -540,13 +540,13 @@ void vd_blk_free(struct vd_blk *blk) {
     // vduse_dev_destroy() will not clean this up.
     if (blk->kick_fd >= 0) {
         if (blk->loop)
-            vd_loop_del(blk->loop, blk->kick_fd);
+            vk_loop_del(blk->loop, blk->kick_fd);
         close(blk->kick_fd);
         blk->kick_fd = -1;
     }
 
     if (blk->loop && blk->dev)
-        vd_loop_del(blk->loop, vduse_dev_get_fd(blk->dev));
+        vk_loop_del(blk->loop, vduse_dev_get_fd(blk->dev));
 
     if (blk->dev)
         vduse_dev_destroy(blk->dev);
@@ -560,24 +560,24 @@ void vd_blk_free(struct vd_blk *blk) {
     free(blk);
 }
 
-const char *vd_blk_name(const struct vd_blk *blk) {
+const char *vk_blk_name(const struct vk_blk *blk) {
     return blk->name;
 }
 
-uint64_t vd_blk_capacity(const struct vd_blk *blk) {
+uint64_t vk_blk_capacity(const struct vk_blk *blk) {
     return blk->capacity;
 }
 
-bool vd_blk_set_capacity(struct vd_blk *blk, uint64_t capacity) {
+bool vk_blk_set_capacity(struct vk_blk *blk, uint64_t capacity) {
     uint64_t sectors;
 
     blk->capacity = capacity - (capacity % blk->block_size);
-    sectors = htole64(blk->capacity / VD_BLK_SECTOR);
+    sectors = htole64(blk->capacity / VK_BLK_SECTOR);
 
     if (vduse_dev_update_config(blk->dev, sizeof(sectors),
                                 offsetof(struct virtio_blk_config, capacity),
                                 (char *)&sectors) < 0) {
-        vd_set_error(EIO, "failed to update config space");
+        vk_set_error(EIO, "failed to update config space");
         return false;
     }
 
