@@ -23,6 +23,7 @@ vduse_blk_lib = library(
   files(
     'src/backend_file.c',
     'src/blk.c',
+    'src/bridge.c',
     'src/bus.c',
     'src/error.c',
     'src/loop.c',
@@ -39,6 +40,7 @@ vduse_blk_dep = declare_dependency(
 
 install_headers(
   'include/vduse/blk.h',
+  'include/vduse/bridge.h',
   'include/vduse/error.h',
   'include/vduse/loop.h',
   subdir : 'vduse',
@@ -47,5 +49,11 @@ install_headers(
 executable(
   'vduse-file-blk',
   'examples/vduse-file-blk.c',
+  dependencies : vduse_blk_dep,
+)
+
+executable(
+  'vduse-uml',
+  'examples/vduse-uml.c',
   dependencies : vduse_blk_dep,
 )
