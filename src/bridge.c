@@ -19,6 +19,7 @@
 #include <sys/mman.h>
 #include <sys/pidfd.h>
 #include <sys/socket.h>
+#include <sys/timerfd.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -34,6 +35,12 @@ extern char **environ;
 #define DEFAULT_BUS_TIMEOUT_MS 10000u
 #define DEFAULT_VDPA_BIN "vdpa"
 #define DEFAULT_MGMTDEV "vduse"
+
+// Lost-event backstop period. Every hop in the relay is an edge that
+// fires exactly once (EVENT_IDX-suppressed vq kicks, one eventfd write
+// per pump batch, one call per completion), so a single lost edge under
+// load would otherwise deadlock the pipeline with every side idle.
+#define WATCHDOG_MS 500
 
 #define MAX_UML_ARGV 64
 
@@ -66,6 +73,11 @@ struct vk_bridge_queue {
     struct vk_bridge_req **inflight; // queue_size entries, indexed by slot
     uint32_t *free_slots;
     uint32_t n_free;
+
+    // Watchdog recoveries: completions or relays that only happened
+    // because the timer re-checked, i.e. whose wakeup edge was lost.
+    uint64_t wd_completions;
+    uint64_t wd_relays;
 };
 
 struct vk_bridge {
@@ -91,6 +103,8 @@ struct vk_bridge {
     uint32_t num_queues;
 
     bool start_sent;
+
+    int wd_fd;
 
     int uml_pidfd;
     int bus_pidfd;
@@ -332,6 +346,96 @@ static void on_uml_call(int fd, void *user) {
 
     // Completions freed slots, so anything that stalled can go now.
     queue_pump(q);
+}
+
+// Backstop against lost wakeups anywhere in the relay: re-check both
+// directions and re-kick UML. Everything here is idempotent, so a tick
+// that finds nothing costs a few reads. Progress made from this callback
+// means an edge was lost (or arrived mid-tick); it is counted so a lossy
+// event path shows up in the logs instead of as a mystery stall.
+static void on_watchdog(int fd, void *user) {
+    struct vk_bridge *br = user;
+    uint64_t ticks, one = 1;
+
+    if (read(fd, &ticks, sizeof(ticks)) < 0 && errno != EAGAIN)
+        return;
+
+    for (uint32_t i = 0; i < br->num_queues; i++) {
+        struct vk_bridge_queue *q = &br->queues[i];
+        uint16_t used_before = q->last_used;
+        uint32_t free_before;
+        uint32_t rec_c, rec_r;
+
+        if (!q->vq)
+            continue;
+
+        queue_drain_used(q);
+        rec_c = (uint16_t)(q->last_used - used_before);
+
+        free_before = q->n_free;
+        queue_pump(q);
+        rec_r = free_before > q->n_free ? free_before - q->n_free : 0;
+
+        q->wd_completions += rec_c;
+        q->wd_relays += rec_r;
+
+        if (rec_c || rec_r)
+            fprintf(stderr,
+                    "vkage: watchdog: queue %u recovered %u completions, "
+                    "%u relays (totals %llu/%llu)\n",
+                    q->index, rec_c, rec_r,
+                    (unsigned long long)q->wd_completions,
+                    (unsigned long long)q->wd_relays);
+
+        // A kick lost while requests sat in the UML ring stays lost
+        // until someone re-kicks. Requests parked in UML for a long
+        // time are normal (RX buffers), so this fires on quiet ticks
+        // too; UML just drains an empty ring.
+        if (q->n_free != br->hello.queue_size)
+            write(q->kick_fd, &one, sizeof(one));
+    }
+}
+
+// UML pushed a config-space change (link status, ...). Forward it into
+// the VDUSE device and raise a config interrupt on the host side.
+static void on_uml_config(int fd, void *user) {
+    struct vk_bridge *br = user;
+    struct umv_config msg;
+    size_t got = 0;
+
+    // The socket is blocking, but UML sends the struct with one sendmsg,
+    // so the remainder follows immediately once POLLIN is up.
+    while (got < sizeof(msg)) {
+        ssize_t rc = recv(fd, (char *)&msg + got, sizeof(msg) - got, 0);
+
+        if (rc < 0 && errno == EINTR)
+            continue;
+        if (rc <= 0) {
+            // Peer closed or the stream broke; UML exit is reported by
+            // the pidfd handler, so just stop listening here.
+            vk_loop_del(br->loop, fd);
+            return;
+        }
+        got += (size_t)rc;
+    }
+
+    if (msg.magic != UMV_MAGIC || msg.type != UMV_MSG_CONFIG) {
+        vk_set_error(EPROTO, "bad CONFIG message from UML");
+        vk_loop_del(br->loop, fd);
+        return;
+    }
+    if (!msg.length || msg.offset > br->hello.config_size ||
+        msg.length > br->hello.config_size - msg.offset) {
+        vk_set_error(EPROTO, "CONFIG update outside config space");
+        return;
+    }
+
+    // Keep the cached copy coherent with what the host now sees.
+    memcpy(br->hello.config + msg.offset, msg.data, msg.length);
+
+    if (vduse_dev_update_config(br->dev, msg.length, msg.offset,
+                                (char *)msg.data) < 0)
+        vk_set_error(EIO, "vduse config update failed");
 }
 
 static void on_ctrl(int fd, void *user) {
@@ -749,7 +853,7 @@ bool vk_bridge_new(struct vk_bridge_opts opts, struct vk_bridge **out) {
     }
 
     br->listen_fd = br->sock_fd = br->physmem_fd = -1;
-    br->uml_pidfd = br->bus_pidfd = -1;
+    br->uml_pidfd = br->bus_pidfd = br->wd_fd = -1;
     br->bus_timeout_ms =
         opts.bus_timeout_ms ? opts.bus_timeout_ms : DEFAULT_BUS_TIMEOUT_MS;
     timeout = opts.handshake_timeout_ms ? opts.handshake_timeout_ms
@@ -827,6 +931,25 @@ bool vk_bridge_attach(struct vk_bridge *br, struct vk_loop *loop) {
         if (!vk_loop_add(loop, br->queues[i].call_fd, on_uml_call,
                          &br->queues[i]))
             return false;
+
+    if (!vk_loop_add(loop, br->sock_fd, on_uml_config, br))
+        return false;
+
+    br->wd_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+    if (br->wd_fd >= 0) {
+        struct itimerspec its = {
+            .it_interval = {.tv_nsec = WATCHDOG_MS * 1000000L},
+            .it_value = {.tv_nsec = WATCHDOG_MS * 1000000L},
+        };
+
+        if (timerfd_settime(br->wd_fd, 0, &its, NULL) < 0 ||
+            !vk_loop_add(loop, br->wd_fd, on_watchdog, br)) {
+            close(br->wd_fd);
+            br->wd_fd = -1;
+        }
+    }
+    if (br->wd_fd < 0)
+        fprintf(stderr, "vkage: no watchdog timer; lost events will stall\n");
 
     if (br->uml_pidfd >= 0 &&
         !vk_loop_add(loop, br->uml_pidfd, on_uml_exit, br))
@@ -936,6 +1059,13 @@ void vk_bridge_free(struct vk_bridge *br) {
         br->bus_added = false;
     }
 
+    if (br->wd_fd >= 0) {
+        if (br->loop)
+            vk_loop_del(br->loop, br->wd_fd);
+        close(br->wd_fd);
+        br->wd_fd = -1;
+    }
+
     if (br->loop && br->dev)
         vk_loop_del(br->loop, vduse_dev_get_fd(br->dev));
 
@@ -964,8 +1094,11 @@ void vk_bridge_free(struct vk_bridge *br) {
         munmap(br->map, br->map_size);
     if (br->physmem_fd >= 0)
         close(br->physmem_fd);
-    if (br->sock_fd >= 0)
+    if (br->sock_fd >= 0) {
+        if (br->loop)
+            vk_loop_del(br->loop, br->sock_fd);
         close(br->sock_fd);
+    }
     if (br->listen_fd >= 0)
         close(br->listen_fd);
     if (br->sock_path)
