@@ -1,3 +1,5 @@
-CLAUDE.md
 docs
-scripts/bench
+build*
+data
+linux-host/linux
+linux-uml/linux
